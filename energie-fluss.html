@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Energie-Fluss — Yoga</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d0d1a;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: Georgia, serif;
+      color: #ddd0f0;
+      user-select: none;
+      overflow: hidden;
+    }
+    h1 { font-size: 1.3rem; letter-spacing: 0.15em; color: #a88fd0; margin-bottom: 4px; }
+    #sub { font-size: 0.8rem; color: #554d70; letter-spacing: 0.08em; margin-bottom: 20px; }
+
+    #canvas-wrap { position: relative; }
+    canvas { display: block; cursor: crosshair; touch-action: none; }
+
+    #hud {
+      display: flex; gap: 32px; margin-top: 16px;
+      font-size: 0.88rem; color: #a88fd0; letter-spacing: 0.06em;
+    }
+    #hud span { color: #fff; font-size: 1.05rem; }
+
+    #lives { font-size: 1.1rem; margin-top: 8px; letter-spacing: 4px; }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: #0d0d1acc;
+      border-radius: 8px;
+    }
+    #overlay h2 { font-size: 1.4rem; color: #c9b8f0; margin-bottom: 10px; }
+    #overlay p  { font-size: 0.85rem; color: #7a6e99; margin-bottom: 24px; text-align:center; max-width:220px; line-height:1.6; }
+    #btn {
+      padding: 11px 34px; background: none;
+      border: 1px solid #6c4abf; border-radius: 40px;
+      color: #c9b8f0; font-size: 0.9rem; letter-spacing: 0.1em;
+      cursor: pointer; transition: background 0.2s;
+    }
+    #btn:hover { background: #6c4abf33; }
+  </style>
+</head>
+<body>
+<h1>Energie-Fluss</h1>
+<p id="sub">Wische Blockaden weg &mdash; halte den Fluss am Leben</p>
+
+<div id="canvas-wrap">
+  <canvas id="c"></canvas>
+  <div id="overlay">
+    <h2>Energie-Fluss</h2>
+    <p>Wische rote Blockaden weg bevor sie den Lichtfluss stoppen.<br>Jede Blockade kostet ein Leben.</p>
+    <button id="btn">Starten</button>
+  </div>
+</div>
+
+<div id="hud">Punkte: <span id="score">0</span> &nbsp;|&nbsp; Level: <span id="level">1</span></div>
+<div id="lives">&#9829; &#9829; &#9829;</div>
+
+<script>
+const canvas  = document.getElementById('c');
+const ctx     = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('score');
+const levelEl = document.getElementById('level');
+const livesEl = document.getElementById('lives');
+const btn     = document.getElementById('btn');
+
+// Canvas size
+const W = 320, H = 520;
+canvas.width = W; canvas.height = H;
+
+// ---- Chakra path: 7 points down the body silhouette ----
+const CHAKRAS = [
+  { y: 60,  color: '#e040fb', name: 'Krone'       },
+  { y: 110, color: '#7c4dff', name: 'Stirn'        },
+  { y: 175, color: '#40c4ff', name: 'Kehle'        },
+  { y: 250, color: '#69f0ae', name: 'Herz'         },
+  { y: 315, color: '#ffff00', name: 'Solarplexus'  },
+  { y: 375, color: '#ff9100', name: 'Sakral'       },
+  { y: 440, color: '#ff1744', name: 'Wurzel'       },
+].map(c => ({ ...c, x: W / 2 }));
+
+// ---- State ----
+let particles  = [];
+let blockades  = [];
+let score      = 0;
+let lives      = 3;
+let level      = 1;
+let running    = false;
+let lastBlock  = 0;
+let lastScore  = 0;
+let animId     = null;
+
+// ---- Particle ----
+function spawnParticle() {
+  const chakra = CHAKRAS[Math.floor(Math.random() * CHAKRAS.length)];
+  particles.push({
+    x: CHAKRAS[0].x,
+    y: CHAKRAS[0].y,
+    targetIdx: 1,
+    speed: 1.2 + level * 0.3,
+    color: chakra.color,
+    size: 5 + Math.random() * 3,
+    alpha: 1,
+    done: false,
+  });
+}
+
+// ---- Blockade ----
+function spawnBlockade() {
+  const idx = 1 + Math.floor(Math.random() * (CHAKRAS.length - 1));
+  blockades.push({
+    x: CHAKRAS[idx].x + (Math.random() - 0.5) * 30,
+    y: CHAKRAS[idx].y,
+    r: 14,
+    alpha: 1,
+    dying: false,
+    dieTimer: 0,
+    hitTimer: 0,  // flash on hit
+    life: 3000 + Math.random() * 2000, // ms before penalty
+    born: performance.now(),
+  });
+}
+
+// ---- Draw body silhouette ----
+function drawBody() {
+  ctx.save();
+  ctx.strokeStyle = '#1e1a35';
+  ctx.lineWidth = 28;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // simple stick figure
+  // head
+  ctx.beginPath();
+  ctx.arc(W/2, 38, 22, 0, Math.PI * 2);
+  ctx.stroke();
+  // spine
+  ctx.beginPath();
+  ctx.moveTo(W/2, 60);
+  ctx.lineTo(W/2, 440);
+  ctx.stroke();
+  // shoulders
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 55, 155);
+  ctx.lineTo(W/2 + 55, 155);
+  ctx.stroke();
+  // arms
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 55, 155);
+  ctx.lineTo(W/2 - 70, 270);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(W/2 + 55, 155);
+  ctx.lineTo(W/2 + 70, 270);
+  ctx.stroke();
+  // hips
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 40, 370);
+  ctx.lineTo(W/2 + 40, 370);
+  ctx.stroke();
+  // legs
+  ctx.beginPath();
+  ctx.moveTo(W/2 - 40, 370);
+  ctx.lineTo(W/2 - 45, 490);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(W/2 + 40, 370);
+  ctx.lineTo(W/2 + 45, 490);
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---- Draw chakra nodes ----
+function drawChakras() {
+  CHAKRAS.forEach(c => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 9, 0, Math.PI * 2);
+    ctx.fillStyle = c.color + '55';
+    ctx.fill();
+    ctx.strokeStyle = c.color + '88';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ---- Draw energy line ----
+function drawLine() {
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(CHAKRAS[0].x, CHAKRAS[0].y);
+  for (let i = 1; i < CHAKRAS.length; i++) {
+    ctx.lineTo(CHAKRAS[i].x, CHAKRAS[i].y);
+  }
+  ctx.strokeStyle = '#ffffff11';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---- Update & draw particles ----
+function updateParticles() {
+  particles = particles.filter(p => p.alpha > 0.01);
+  particles.forEach(p => {
+    if (p.done) { p.alpha -= 0.04; return; }
+    const target = CHAKRAS[p.targetIdx];
+    const dx = target.x - p.x, dy = target.y - p.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    if (dist < p.speed + 2) {
+      p.x = target.x; p.y = target.y;
+      p.targetIdx++;
+      if (p.targetIdx >= CHAKRAS.length) {
+        p.done = true;
+        score += 5 * level;
+        scoreEl.textContent = score;
+      }
+    } else {
+      p.x += (dx / dist) * p.speed;
+      p.y += (dy / dist) * p.speed;
+    }
+    // glow
+    ctx.save();
+    const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.size * 2.5);
+    g.addColorStop(0, p.color + 'ff');
+    g.addColorStop(1, p.color + '00');
+    ctx.globalAlpha = p.alpha;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * 2.5, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * 0.6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fff';
+    ctx.fill();
+    ctx.restore();
+  });
+}
+
+// ---- Update & draw blockades ----
+function updateBlockades(now) {
+  blockades = blockades.filter(b => b.alpha > 0.01);
+  blockades.forEach(b => {
+    if (b.dying) {
+      b.alpha -= 0.06;
+      b.r += 0.5;
+      return;
+    }
+    const age = now - b.born;
+    if (age > b.life) {
+      // penalty
+      b.dying = true;
+      lives--;
+      updateLives();
+      if (lives <= 0) endGame();
+      return;
+    }
+    const urgency = age / b.life;  // 0 -> 1
+    const pulse   = 0.8 + 0.2 * Math.sin(now / 200);
+
+    ctx.save();
+    ctx.globalAlpha = b.alpha * pulse;
+    // outer ring
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r + 4, 0, Math.PI * 2);
+    ctx.strokeStyle = `hsl(${0 + urgency * 20}, 90%, 55%)`;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // fill
+    const g = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.r);
+    g.addColorStop(0, `hsla(${10}, 90%, 65%, 0.9)`);
+    g.addColorStop(1, `hsla(${350}, 70%, 35%, 0.4)`);
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    // countdown ring
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, -Math.PI/2, -Math.PI/2 + (1 - urgency) * Math.PI * 2);
+    ctx.strokeStyle = '#ffffff66';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.restore();
+  });
+}
+
+// ---- Wipe interaction ----
+let pointerDown = false;
+let lastPointer = null;
+
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const src  = e.touches ? e.touches[0] : e;
+  return { x: src.clientX - rect.left, y: src.clientY - rect.top };
+}
+
+function tryWipe(pos) {
+  if (!running) return;
+  blockades.forEach(b => {
+    if (b.dying) return;
+    const dx = pos.x - b.x, dy = pos.y - b.y;
+    if (Math.sqrt(dx*dx + dy*dy) < b.r + 12) {
+      b.dying = true;
+      score += 10 * level;
+      scoreEl.textContent = score;
+    }
+  });
+}
+
+canvas.addEventListener('pointerdown', e => { pointerDown = true; lastPointer = getPos(e); tryWipe(lastPointer); });
+canvas.addEventListener('pointermove', e => {
+  if (!pointerDown) return;
+  const pos = getPos(e);
+  tryWipe(pos);
+  lastPointer = pos;
+});
+canvas.addEventListener('pointerup',   () => { pointerDown = false; });
+canvas.addEventListener('pointerout',  () => { pointerDown = false; });
+
+// ---- Lives display ----
+function updateLives() {
+  let s = '';
+  for (let i = 0; i < 3; i++) s += i < lives ? '♥ ' : '♡ ';
+  livesEl.textContent = s.trim();
+}
+
+// ---- Level up ----
+function checkLevel(now) {
+  const newLevel = 1 + Math.floor(score / 200);
+  if (newLevel !== level) {
+    level = newLevel;
+    levelEl.textContent = level;
+  }
+}
+
+// ---- Main loop ----
+let spawnTimer = 0;
+let blockTimer = 0;
+function loop(now) {
+  animId = requestAnimationFrame(loop);
+  ctx.clearRect(0, 0, W, H);
+
+  drawBody();
+  drawLine();
+  drawChakras();
+  updateParticles();
+  updateBlockades(now);
+
+  // spawn particles
+  const spawnInterval = Math.max(600, 1800 - level * 120);
+  if (now - spawnTimer > spawnInterval) { spawnParticle(); spawnTimer = now; }
+
+  // spawn blockades
+  const blockInterval = Math.max(1200, 4000 - level * 300);
+  if (now - blockTimer > blockInterval) { spawnBlockade(); blockTimer = now; }
+
+  checkLevel(now);
+}
+
+// ---- Game flow ----
+function startGame() {
+  particles = []; blockades = [];
+  score = 0; lives = 3; level = 1;
+  scoreEl.textContent = 0; levelEl.textContent = 1;
+  updateLives();
+  overlay.style.display = 'none';
+  running = true;
+  spawnTimer = blockTimer = performance.now();
+  requestAnimationFrame(loop);
+}
+
+function endGame() {
+  running = false;
+  cancelAnimationFrame(animId);
+  overlay.style.display = 'flex';
+  overlay.querySelector('h2').textContent = 'Spiel vorbei';
+  overlay.querySelector('p').textContent  = `Punkte: ${score}   Level: ${level}`;
+  btn.textContent = 'Nochmal';
+}
+
+btn.addEventListener('click', startGame);
+</script>
+</body>
+</html>
